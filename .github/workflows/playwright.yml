@@ -52,7 +52,7 @@ jobs:
 
       # 4. Install Chromium and required Linux dependencies
       - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install 
 
       # 5. Run smoke tests every morning; run all tests for other triggers
       - name: Run Playwright tests
