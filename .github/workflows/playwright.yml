@@ -1,27 +1,129 @@
-name: Playwright Tests
+name: Playwright UI Automation
+
 on:
   push:
-    branches: [ main, master ]
+    branches:
+      - main
+      - master
+
   pull_request:
-    branches: [ main, master ]
+    branches:
+      - main
+      - master
+
+  # Every morning at 9:00 AM IST (03:30 UTC)
+  schedule:
+    - cron: '30 3 * * *'
+
+  # Allows manual execution from GitHub Actions
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
   test:
-    timeout-minutes: 60
+    name: Playwright Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      CI: 'true'
+      ENVIRONMENT: QA
+      BASE_URL: ${{ secrets.QA_BASE_URL }}
+      USERNAME: ${{ secrets.QA_USERNAME }}
+      PASSWORD: ${{ secrets.QA_PASSWORD }}
+
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-node@v4
-      with:
-        node-version: lts/*
-    - name: Install dependencies
-      run: npm ci
-    - name: Install Playwright Browsers
-      run: npx playwright install --with-deps
-    - name: Run Playwright tests
-      run: npx playwright test
-    - uses: actions/upload-artifact@v4
-      if: ${{ !cancelled() }}
-      with:
-        name: playwright-report
-        path: playwright-report/
-        retention-days: 30
+      # 1. Checkout repository
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Install Node.js
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # 3. Install project dependencies
+      - name: Install dependencies
+        run: npm ci
+
+      # 4. Install Chromium and required Linux dependencies
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      # 5. Run smoke tests every morning; run all tests for other triggers
+      - name: Run Playwright tests
+        id: tests
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            echo "Running scheduled smoke tests..."
+            npx playwright test --grep "@smoke"
+          else
+            echo "Running complete Playwright test suite..."
+            npx playwright test
+          fi
+
+      # 6. Package the HTML report, even if tests fail
+      - name: Package Playwright report
+        id: package_report
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          if [ -d playwright-report ]; then
+            zip -qr playwright-report.zip playwright-report
+            echo "report_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "report_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 7. Save report in GitHub Actions artifacts
+      - name: Upload Playwright report
+        if: ${{ always() && steps.package_report.outputs.report_exists == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ github.run_number }}
+          path: playwright-report.zip
+          retention-days: 30
+
+      # 8. Save test results and traces
+      - name: Upload test results
+        if: ${{ always() && hashFiles('test-results/**') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results-${{ github.run_number }}
+          path: test-results/
+          retention-days: 7
+
+      # 9. Email the report after execution
+      - name: Email Playwright report
+        if: ${{ always() && steps.package_report.outputs.report_exists == 'true' }}
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: >-
+            Playwright ${{ github.event_name == 'schedule' && 'Morning Smoke Test' || 'Automation' }} Report - ${{ job.status }}
+          to: ${{ secrets.REPORT_EMAIL }}
+          from: Playwright Automation <${{ secrets.MAIL_USERNAME }}>
+          body: |
+            Hello,
+
+            Playwright automation execution has finished.
+
+            Trigger: ${{ github.event_name }}
+            Branch: ${{ github.ref_name }}
+            Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            The attached ZIP contains the Playwright HTML report.
+            Extract the ZIP and open playwright-report/index.html in a browser.
+
+            Regards,
+            Playwright Automation Framework
+          attachments: playwright-report.zip
